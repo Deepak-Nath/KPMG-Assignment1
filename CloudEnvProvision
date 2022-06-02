@@ -1,0 +1,94 @@
+##Create a resource group in eastus2 region
+az group create -l eastus2 -n DKN_TEST_RG
+
+##Create a Vnet
+az network vnet create --name dkn-test-vnet --address-prefix '10.3.1.0/24'
+
+#####Create a private cluster####
+
+##Set defaults
+az configure --defaults location=eastus2 group=DKN_TEST_RG
+
+##create aks subnet
+az network vnet subnet create --name dkn-test-aks-snet  --vnet-name dkn-test-vnet --address-prefixes '10.3.1.64/26'
+
+##Allow private endpoint in AKS subnet
+##This is required as the AKS needs to create a private endpoint
+##so the AKS nodes can communicate with the KUBE API
+
+AKS_SUBNET_ID=$(az network vnet subnet show --vnet-name dkn-test-vnet --name dkn-test-aks-snet --query id -o tsv)
+az network vnet subnet update --ids $AKS_SUBNET_ID --disable-private-link-service-network-policies true --disable-private-endpoint-network-policies true
+
+# Add a Microsoft.ContainerRegistry service endpoint to our subnet.
+# This is required in order to give the subnet firewall access to the ACR.
+
+az network vnet subnet update --ids $AKS_SUBNET_ID --service-endpoints Microsoft.ContainerRegistry
+
+
+## Create a service principal for a resource group
+az ad sp create-for-rbac --name dkn-test-aks-sp --role contributer --scopes /subscriptions/<mySubscriptionID>/resourceGroups/DKN_TEST_RG
+##create a secret in the service principal, read the secret in SP_SECRET
+SP_ID=$(az ad sp show --id dkn-test-aks-sp --query [appId] -o tsv)
+
+##Create private AKS
+az aks create \
+        --name dkn-test-aks \
+        --load-balancer-sku standard \
+        --enable-private-cluster \
+        --network-plugin kubenet \
+        --vnet-subnet-id dkn-test-aks-snet \
+        --vm-set-type VirtualMachineScaleSets \
+        --node-count 3 \
+        --node-vm-size 'Standard_DS2_v2'  \
+        --zones 1 2 3 \
+        --kubernetes-version 1.21.9 \
+        --service-principal $SP_ID \
+        --client-secret $SP_SECRET
+		
+		
+##Add webservices nodepool
+az aks nodepool add \
+        --name backend-nodepool \
+        --cluster-name dkn-test-aks \
+        --vnet-subnet-id dkn-test-aks-snet \
+        --node-vm-size 'Standard_DS2_v2'  \
+        --node-count 2 \
+        --node-osdisk-size 128 \
+        --node-taints "sku=dkn-test-ws:NoSchedule" \
+        --zones 1 2 3
+		
+##Add database nodepool
+az aks nodepool add \
+        --name db-nodepool \
+        --cluster-name dkn-test-aks \
+        --vnet-subnet-id dkn-test-aks-snet \
+        --node-vm-size 'Standard_DS2_v2'  \
+        --node-count 2 \
+        --node-osdisk-size 128 \
+        --node-taints "sku=dkn-test-db:NoSchedule" \
+        --zones 1 2 3
+
+##Grant the principal 'network contributer' role to the AKS subnet 
+##so AKS can create the kubernetes-internal load balancer
+az role assignment create --assignee $SP_ID --role "network contributor" --scope $AKS_SUBNET_ID
+		
+##Fetch the AKS credentials
+az aks get-credentials --name dkn-test-aks  --resource-group DKN_TEST_RG
+
+##Create an ACR
+##Use a premium SKU so we can enable the firewall and set the default network access to deny
+az acr create --name dkn-test-acr --default-action deny --sku premium
+
+##Give AKS permission to pull images from ACR
+ACR_ID=$(az acr show --name dkn-test-acr --query "id" --output tsv)
+
+##Assign the role acrpull to the AKS SP_ID
+az role assignment create --assignee $SP_ID --role acrpull --scope $ACR_ID
+
+##Attach ACR to AKS
+az aks update --name dkn-test-aks --attach-acr dkn-test-acr 
+
+##Add AKS subnet to the ACR firewall
+az acr network-rule add --name dkn-test-acr --subnet $AKS_SUBNET_ID
+
+##This Completes the creation of dkn-test Azure cloud environment ##
