@@ -1,5 +1,5 @@
 # KPMG-Assignment1
-This is a list of az cli cmds can be run as a bundle inside a bash script or independedntly to create a test Azure cloud test environemnt for KPMG assignment.
+This is a list of az cli cmds which can be run as a bundle inside a bash script or independedntly to provision an Azure cloud test environemnt for KPMG assignment.
 list of tasks:
 ##Create a resource group
 ##Create a Vnet
