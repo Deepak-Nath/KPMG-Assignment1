@@ -1,0 +1,101 @@
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: dkn-test-sc
+  namespace: dkn-test-ns
+provisioner: kubernetes.io/azure-disk
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  skuName: Premium_LRS
+  location: eastus2
+  kind: Managed
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: webservices
+  namespace: dk-test-ns
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    name: http
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    dci-app: webservices
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webservices
+  namespace: dk-test-ns
+spec:
+  selector:
+    matchLabels:
+      app: webservices 
+  replicas: 2
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: webservices
+    spec:
+      tolerations:
+        - key: "sku"
+          operator: "Equal"
+          value: "dkn-test-ws"
+          effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: "app"
+                    operator: In
+                    values:
+                    - dkn-test-db
+              topologyKey: "kubernetes.io/hostname"
+              
+      containers:
+      - name: webservices
+        image: dkn-test-acr/webservices
+        env:
+        - name: MONGODB_ADMINUSERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: mongo-root-username
+        - name: MONGODB_ADMINPASSWORD
+          valueFrom: 
+            secretKeyRef:
+              name: mongodb-secret
+              key: mongo-root-password
+        - name: MONGODB_SERVER
+          valueFrom: 
+            configMapKeyRef:
+              name: mongodb-configmap
+              key: database_url
+        - name: NS
+          value: dk-test-ns
+        ports:
+          - containerPort: 8080
+            protocol: TCP
+        volumeMounts:
+          - mountPath: "/usr/local/tomcat/apache-tomcat-9.0.36/logs/"
+            name: tomcat-logs
+
+  volumeClaimTemplates:
+  - metadata:
+      name: tomcat-logs
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: dkn-test-sc
+      resources:
+        requests:
+          storage: 20
